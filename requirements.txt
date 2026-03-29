@@ -1,0 +1,6 @@
+customtkinter
+pypdf
+requests
+EbookLib
+scikit-learn
+pyinstaller
