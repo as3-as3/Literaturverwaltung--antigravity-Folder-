@@ -96,8 +96,9 @@ class APLMainWindow(ctk.CTk):
             self.log("[+] Schritt 3/4: Bibliotheks-Sortierung...")
             sorter.run_sorter(log_callback=self.log, progress_callback=self.set_progress)
             
-            self.log("[+] Schritt 4/4: Listen-Export...")
+            self.log("[+] Schritt 4/4: Listen-Export & HTML-Suche...")
             exporter.export_research_list(log_callback=self.log)
+            exporter.export_html_search(log_callback=self.log)
             
             elapsed = time.time() - start_total
             m, s = divmod(int(elapsed), 60)
@@ -149,6 +150,7 @@ class APLMainWindow(ctk.CTk):
         self.log("[*] Research List Export triggered...")
         st = time.time()
         exporter.export_research_list(log_callback=self.log)
+        exporter.export_html_search(log_callback=self.log)
         m, s = divmod(int(time.time() - st), 60)
         self.log(f"[*] Export completed in {m}m {s}s.")
 
@@ -197,6 +199,7 @@ class APLMainWindow(ctk.CTk):
             hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
             sorter.run_sorter(log_callback=self.log, progress_callback=self.set_progress)
             exporter.export_research_list(log_callback=self.log)
+            exporter.export_html_search(log_callback=self.log)
             
             elapsed = time.time() - start_total
             m, s = divmod(int(elapsed), 60)
