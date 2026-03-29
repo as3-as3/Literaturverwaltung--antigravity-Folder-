@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import concurrent.futures
 from pypdf import PdfReader
 from ebooklib import epub
@@ -97,8 +98,10 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
     docs_inserted = 0
     futures = []
     
-    # Use max CPU threads * 2 for efficient IO/CPU overlapping
-    workers = min(32, (os.cpu_count() or 1) * 2)
+    # Use max CPU threads capped at 8 to prevent RAM saturation / freezing on heavy PCs
+    workers = min(8, (os.cpu_count() or 1) * 2)
+    
+    start_time = time.time()
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         for dirpath, f, ext in target_files:
@@ -106,7 +109,16 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
             futures.append(executor.submit(process_file_task, f, full_path, ext))
             
         for idx, future in enumerate(concurrent.futures.as_completed(futures)):
-            if progress_callback: progress_callback((idx + 1) / float(total))
+            completed = idx + 1
+            if progress_callback:
+                elapsed = time.time() - start_time
+                avg_speed = elapsed / completed if completed > 0 else 0
+                remaining = total - completed
+                eta_sec = int(remaining * avg_speed)
+                m, s = divmod(eta_sec, 60)
+                h, m = divmod(m, 60)
+                eta_str = f"Restzeit (Index): {h}h {m}m {s}s" if h > 0 else f"Restzeit (Index): {m}m {s}s"
+                progress_callback(completed / float(total), eta_str)
             
             try:
                 f, full_path, isbn, doi = future.result()

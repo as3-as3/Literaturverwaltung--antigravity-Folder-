@@ -1,7 +1,7 @@
-import os
 import shutil
 import sqlite3
 import csv
+import time
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -121,8 +121,20 @@ def run_sorter(log_callback=None, progress_callback=None):
     doc_assignments = assign_thematic_path_corpus(corpus_input, log_callback)
     
     sorted_count = 0
+    start_time = time.time()
+    
     for idx, doc in enumerate(docs):
-        if progress_callback: progress_callback(idx / float(max(1, total_docs)))
+        completed = idx + 1
+        if progress_callback:
+            elapsed = time.time() - start_time
+            avg_speed = elapsed / completed if completed > 0 else 0
+            remaining = total_docs - completed
+            eta_sec = int(remaining * avg_speed)
+            m, s = divmod(eta_sec, 60)
+            h, m = divmod(m, 60)
+            eta_str = f"Restzeit (Sort): {h}h {m}m {s}s" if h > 0 else f"Restzeit (Sort): {m}m {s}s"
+            progress_callback(completed / float(max(1, total_docs)), eta_str)
+            
         doc_id, rel_path, filename, title, keywords = doc
         source_path = os.path.join(database.get_base_path(), rel_path)
         

@@ -7,8 +7,20 @@ def hydrate_documents(log_callback=None, progress_callback=None):
     total = len(unhydrated)
     if log_callback: log_callback(f"Found {total} documents pending hydration.")
     
+    start_time = time.time()
+    
     for idx, doc in enumerate(unhydrated):
-        if progress_callback: progress_callback(idx / float(max(1, total)))
+        completed = idx + 1
+        if progress_callback:
+            elapsed = time.time() - start_time
+            avg_speed = elapsed / completed if completed > 0 else 0
+            remaining = total - completed
+            eta_sec = int(remaining * avg_speed)
+            m, s = divmod(eta_sec, 60)
+            h, m = divmod(m, 60)
+            eta_str = f"Restzeit (Web): {h}h {m}m {s}s" if h > 0 else f"Restzeit (Web): {m}m {s}s"
+            progress_callback(completed / float(total), eta_str)
+            
         doc_id, filename, rel_path, isbn, doi = doc
         tags = {'title': None, 'author': None, 'year': None, 'keywords': None}
         
