@@ -14,6 +14,113 @@ def apply_theme():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("green")
 
+class SortingPreviewWindow(ctk.CTkToplevel):
+    def __init__(self, parent, category_counts, assignments, on_confirm):
+        super().__init__(parent)
+        self.title("Sortiervorschau & Kategorien-Setup")
+        self.geometry("600x700")
+        self.assignments = assignments
+        self.on_confirm = on_confirm
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(self, text="Schritt 1: Kategorien prüfen & anpassen", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, pady=20)
+        
+        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="Erkannte Kategorien")
+        self.scroll_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        
+        self.category_widgets = {}
+        # Sort by count descending
+        sorted_cats = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        for name, count in sorted_cats:
+            frame = ctk.CTkFrame(self.scroll_frame)
+            frame.pack(fill="x", pady=5, padx=5)
+            
+            var_include = ctk.BooleanVar(value=True)
+            cb = ctk.CTkCheckBox(frame, text=f"({count})", variable=var_include, width=50)
+            cb.pack(side="left", padx=5)
+            
+            entry = ctk.CTkEntry(frame, width=300)
+            entry.insert(0, name)
+            entry.pack(side="left", padx=5, fill="x", expand=True)
+            
+            self.category_widgets[name] = {"include": var_include, "entry": entry}
+
+        self.btn_confirm = ctk.CTkButton(self, text="Bestätigen & Fallback berechnen", command=self._confirm)
+        self.btn_confirm.grid(row=2, column=0, pady=20)
+        
+        self.after(100, self.lift)
+        self.grab_set()
+
+    def _confirm(self):
+        rename_map = {}
+        excluded = []
+        for old_name, widgets in self.category_widgets.items():
+            new_name = widgets["entry"].get().strip()
+            if not widgets["include"].get():
+                excluded.append(old_name)
+            else:
+                rename_map[old_name] = new_name
+        
+        self._on_close = None 
+        self.on_confirm(rename_map, excluded)
+        self.destroy()
+
+class ManualAssignmentWindow(ctk.CTkToplevel):
+    def __init__(self, parent, manual_docs, kept_categories, on_finalize):
+        super().__init__(parent)
+        self.title("Manuelle Nachbearbeitung")
+        self.geometry("800x600")
+        self.manual_docs = manual_docs
+        self.kept_categories = sorted(kept_categories)
+        self.on_finalize = on_finalize
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(self, text="Schritt 2: Dateien manuell zuordnen", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, pady=20)
+        
+        self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="Unklare Zuordnungen")
+        self.scroll_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        
+        self.doc_widgets = []
+        for doc_id, data in manual_docs.items():
+            frame = ctk.CTkFrame(self.scroll_frame)
+            frame.pack(fill="x", pady=5, padx=5)
+            
+            ctk.CTkLabel(frame, text=data['filename'], width=250, anchor="w").pack(side="left", padx=5)
+            
+            # Category Dropdown - Only KEPT ones
+            initial_val = data["matches"][0][0] if data["matches"][0][0] in self.kept_categories else self.kept_categories[0] if self.kept_categories else "_nicht_zugeordnet"
+            cat_var = ctk.StringVar(value=initial_val)
+            cb = ctk.CTkComboBox(frame, values=self.kept_categories + ["_nicht_zugeordnet"], variable=cat_var, width=200)
+            cb.pack(side="left", padx=5)
+            
+            # Sub-Subject Entry
+            sub_entry = ctk.CTkEntry(frame, width=150)
+            sub_entry.insert(0, data.get("top_word", "Allgemein"))
+            sub_entry.pack(side="left", padx=5)
+            
+            self.doc_widgets.append({"id": doc_id, "cat_var": cat_var, "sub_entry": sub_entry})
+
+        self.btn_finalize = ctk.CTkButton(self, text="Sortiervorgang jetzt starten", command=self._finalize)
+        self.btn_finalize.grid(row=2, column=0, pady=20)
+        
+        self.after(100, self.lift)
+        self.grab_set()
+
+    def _finalize(self):
+        final_assignments = {}
+        for item in self.doc_widgets:
+            final_assignments[item["id"]] = {
+                "cat": item["cat_var"].get(),
+                "subcat": item["sub_entry"].get()
+            }
+        self.on_finalize(final_assignments)
+        self.destroy()
+
 class APLMainWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -135,15 +242,76 @@ class APLMainWindow(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
         
     def on_sort(self):
-        self.log("[*] Thematic Sort triggered...")
+        self.log("[*] Starte interaktive Thematische Sortierung...")
         self.progressbar.set(0)
-        self.eta_label.configure(text="Berechne...")
+        self.eta_label.configure(text="Berechne Vorschau...")
+        
+        def worker():
+            try:
+                counts, assignments = sorter.get_sorting_preview(log_callback=self.log)
+                if not assignments:
+                    self.log("[!] Keine hydrierten Dokumente zum Sortieren gefunden.")
+                    self.set_progress(1.0, "Abgebrochen")
+                    return
+                
+                # Switch to main thread for UI
+                self.after(0, lambda: self._show_preview(counts, assignments))
+            except Exception as e:
+                self.log(f"[Error] Vorschau-Fehler: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_preview(self, counts, assignments):
+        SortingPreviewWindow(self, counts, assignments, self._process_preview_selection)
+
+    def _process_preview_selection(self, rename_map, excluded):
+        self.log(f"[*] Kategorien bestätigt. {len(excluded)} ausgeschlossen.")
+        
+        # 1. Prepare Fallback & Split docs
+        ready_assignments = {}
+        manual_docs = {}
+        kept_categories = list(rename_map.values())
+        
+        # We need a reverse map for assignments that used old names
+        # Actually rename_map keys are old names, values are new names.
+        
+        for doc_id, data in sorter.get_sorting_preview()[1].items(): # Refreshing to be safe, or just use passed assignments
+            # Check primary match
+            primary_cat = data["matches"][0][0]
+            
+            final_cat = None
+            if primary_cat not in excluded and primary_cat != "Verschiedenes":
+                final_cat = rename_map.get(primary_cat, primary_cat)
+            else:
+                # Try Fallback (matches 1 to n)
+                for m_cat, m_score in data["matches"][1:]:
+                    if m_cat not in excluded and m_cat != "Verschiedenes":
+                        final_cat = rename_map.get(m_cat, m_cat)
+                        break
+            
+            if final_cat:
+                ready_assignments[doc_id] = {"cat": final_cat, "subcat": data["top_word"]}
+            else:
+                manual_docs[doc_id] = data
+
+        if manual_docs:
+            self.log(f"[*] {len(manual_docs)} Dokumente benötigen manuelle Zuordnung.")
+            ManualAssignmentWindow(self, manual_docs, kept_categories, 
+                                   lambda m_map: self._finalize_sorting(ready_assignments, m_map))
+        else:
+            self._finalize_sorting(ready_assignments, {})
+
+    def _finalize_sorting(self, ready, manual):
+        # Merge
+        final_assignments = {**ready, **manual}
+        self.log(f"[*] Starte finalen Sortiervorgang ({len(final_assignments)} Dateien)...")
+        
         def worker():
             st = time.time()
-            sorter.run_sorter(log_callback=self.log, progress_callback=self.set_progress)
+            sorter.apply_sorting(final_assignments, log_callback=self.log, progress_callback=self.set_progress)
             m, s = divmod(int(time.time() - st), 60)
             self.set_progress(1.0, f"Fertig in {m}m {s}s")
-            self.log(f"[*] Sorting task completed in {m}m {s}s.")
+        
         threading.Thread(target=worker, daemon=True).start()
         
     def on_export(self):
