@@ -109,10 +109,27 @@ HTML_TEMPLATE = """
             font-size: 14px;
             white-space: nowrap;
             transition: background 0.2s;
+            display: inline-block;
         }
         .btn-open:hover {
             background-color: var(--accent-hover);
         }
+        .btn-cite {
+            background-color: #444;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            margin-right: 5px;
+            transition: background 0.2s;
+        }
+        .btn-cite:hover {
+            background-color: #555;
+        }
+        .actions { display: flex; align-items: center; }
         #results { list-style: none; padding: 0; margin: 0; }
     </style>
 </head>
@@ -152,10 +169,49 @@ HTML_TEMPLATE = """
                         <p class="title">${item.title || item.filename}</p>
                         <p class="meta">${metaText.join(' | ') || 'Keine Metadaten verzeichnet'}</p>
                     </div>
-                    <a class="btn-open" href="${item.path}" target="_blank">Öffnen</a>
+                    <div class="actions">
+                        <button class="btn-cite" onclick="copyCitation('${item.apa.replace(/'/g, "\\'")}', this)">Zitieren</button>
+                        <a class="btn-open" href="${item.path}" target="_blank">Öffnen</a>
+                    </div>
                 `;
                 resultsEl.appendChild(li);
             }
+        }
+
+        async function copyCitation(text, btn) {
+            const oldText = btn.innerText;
+            
+            try {
+                // Try modern Clipboard API
+                if (navigator.clipboard) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    throw new Error('API unavailable');
+                }
+            } catch (err) {
+                // Fallback: Hidden Textarea (Reliable for file:// and mobile)
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                textArea.style.left = "-9999px";
+                textArea.style.top = "0";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                } catch (e) {
+                    console.error('Fallback copy failed', e);
+                }
+                document.body.removeChild(textArea);
+            }
+            
+            btn.innerText = 'Kopiert!';
+            btn.style.backgroundColor = '#2e7d32';
+            setTimeout(() => {
+                btn.innerText = oldText;
+                btn.style.backgroundColor = '';
+            }, 2000);
         }
 
         function filterDocs() {
@@ -184,23 +240,31 @@ def export_html_search(log_callback=None):
     
     conn = sqlite3.connect(database.get_db_path())
     cursor = conn.cursor()
-    cursor.execute("SELECT filename, title, author, year, keywords, relative_path FROM documents")
+    cursor.execute("SELECT filename, title, author, year, keywords, relative_path, doi FROM documents")
     docs = cursor.fetchall()
     
     db_items = []
     for doc in docs:
-        filename, title, author, year, keywords, rel_path = doc
+        filename, title, author, year, keywords, rel_path, doi = doc
         safe_path = ""
         if rel_path:
             safe_path = "./" + str(rel_path).replace("\\", "/")
             
+        # Pre-format APA citation
+        a = author if author else "Unbekannter Autor"
+        y = f"({year})" if year else "(o. J.)"
+        t = title if title else "Unbekannter Titel"
+        d = f" https://doi.org/{doi}" if doi else ""
+        apa = f"{a} {y}. {t}.{d}"
+
         db_items.append({
             "filename": filename or "",
             "title": title or "",
             "author": author or "",
             "year": year or "",
             "keywords": keywords or "",
-            "path": safe_path
+            "path": safe_path,
+            "apa": apa
         })
         
     json_data = json.dumps(db_items)

@@ -11,10 +11,32 @@ ISBN_REGEX = re.compile(r"(?i)ISBN(?:-1[03])?:?\s*((?:97[89][- ]?)?[0-9]{1,5}[- 
 DOI_REGEX = re.compile(r"(?i)\b(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)\b")
 
 def clean_identifier(text):
-    if not text: return None
-    # Remove ISBN label if captured
     text = re.sub(r'(?i)ISBN(?:-1[03])?:?\s*', '', text)
     return re.sub(r'[^0-9X]', '', text.upper())
+
+def extract_keywords(text):
+    """Frequency-based keyword extraction with a portable stop-word filter."""
+    if not text: return ""
+    # Basics for German/English
+    stopwords = {
+        'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'eines', 'einen', 'einem',
+        'und', 'oder', 'aber', 'denn', 'doch', 'mit', 'auf', 'aus', 'bei', 'bis', 'von', 'zu', 'vor',
+        'nach', 'fr', 'gegen', 'ohne', 'um', 'durch', 'wie', 'als', 'ist', 'sind', 'war', 'waren',
+        'the', 'and', 'or', 'but', 'for', 'with', 'on', 'at', 'by', 'from', 'up', 'out', 'in', 'of',
+        'this', 'that', 'these', 'those', 'it', 'they', 'we', 'was', 'were', 'have', 'had', 'been',
+        'abstrakt', 'einleitung', 'fazit', 'schluss', 'anhang', 'abstract', 'introduction', 'conclusion'
+    }
+    # Clean and split
+    words = re.findall(r'\b[a-z--]{4,}\b', text.lower())
+    counts = {}
+    for w in words:
+        if w not in stopwords:
+            counts[w] = counts.get(w, 0) + 1
+    
+    # Sort and take top 15
+    sorted_words = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    top_keywords = [w for w, c in sorted_words[:15]]
+    return ", ".join(top_keywords)
 
 def extract_from_filename(filename):
     isbn = ISBN_REGEX.search(filename)
@@ -40,7 +62,7 @@ def extract_from_pdf(filepath):
             
     except Exception as e:
         print(f"PDF Error {filepath}: {e}")
-    return isbn_val, doi_val
+    return isbn_val, doi_val, text # Return extracted text for keywords
 
 def extract_from_epub(filepath):
     isbn_val, doi_val = None, None
@@ -66,25 +88,34 @@ def extract_from_epub(filepath):
             
     except Exception as e:
         print(f"EPUB Error {filepath}: {e}")
-    return isbn_val, doi_val
+    return isbn_val, doi_val, text # Return extracted text for keywords
 
-def process_file_task(f, full_path, ext):
+def process_file_task(f, full_path, ext, status_callback=None):
     """Isolated task for Thread-Pool without DB lock risks."""
-    isbn, doi = extract_from_filename(f)
-    
-    # Deep extraction
-    if not isbn or not doi:
-        if ext == 'pdf':
-            p_isbn, p_doi = extract_from_pdf(full_path)
-        else:
-            p_isbn, p_doi = extract_from_epub(full_path)
+    if status_callback:
+        status_callback(f, True)
         
-        if not isbn: isbn = p_isbn
-        if not doi: doi = p_doi
+    try:
+        isbn, doi = extract_from_filename(f)
+        
+        # Deep extraction
+        keywords = ""
+        if not isbn or not doi:
+            if ext == 'pdf':
+                p_isbn, p_doi, text = extract_from_pdf(full_path)
+            else:
+                p_isbn, p_doi, text = extract_from_epub(full_path)
             
-    return f, full_path, isbn, doi
+            if not isbn: isbn = p_isbn
+            if not doi: doi = p_doi
+            keywords = extract_keywords(text)
+                
+        return f, full_path, isbn, doi, keywords
+    finally:
+        if status_callback:
+            status_callback(f, False)
 
-def run_indexer(root_path, log_callback=None, progress_callback=None):
+def run_indexer(root_path, log_callback=None, progress_callback=None, status_callback=None):
     if log_callback: log_callback(f"Indexing (Multithreaded) started from {root_path}")
     
     # Pre-flight calculate total size for progress bar
@@ -111,7 +142,7 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         for dirpath, f, ext in target_files:
             full_path = os.path.join(dirpath, f)
-            futures.append(executor.submit(process_file_task, f, full_path, ext))
+            futures.append(executor.submit(process_file_task, f, full_path, ext, status_callback))
             
         for idx, future in enumerate(concurrent.futures.as_completed(futures)):
             completed = idx + 1
@@ -126,17 +157,17 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
                 progress_callback(completed / float(total), eta_str)
             
             try:
-                f, full_path, isbn, doi = future.result()
+                f, full_path, isbn, doi, keywords = future.result()
                 rel_path = os.path.relpath(full_path, start=database.get_base_path())
                 
                 # DB Sync - Strictly Sequential here!
                 query = '''
-                    INSERT OR IGNORE INTO documents (relative_path, filename, isbn, doi, is_hydrated)
-                    VALUES (?, ?, ?, ?, 0)
+                    INSERT OR IGNORE INTO documents (relative_path, filename, isbn, doi, keywords, is_hydrated)
+                    VALUES (?, ?, ?, ?, ?, 0)
                 '''
                 
                 try:
-                    database.execute_atomic(query, (rel_path, f, isbn, doi))
+                    database.execute_atomic(query, (rel_path, f, isbn, doi, keywords))
                     docs_inserted += 1
                 except Exception:
                     pass
@@ -146,7 +177,7 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
     if log_callback: log_callback(f"Indexing finished. {docs_inserted} pending documents found.")
     return docs_inserted
 
-def reindex_unsorted_files(log_callback=None, progress_callback=None):
+def reindex_unsorted_files(log_callback=None, progress_callback=None, status_callback=None):
     """Specifically re-scans documents that are NOT YET SORTED to pick up missing identifiers."""
     if log_callback: log_callback("[*] Starte Tiefen-Reindexierung für unsortierte Werke...")
     
@@ -171,27 +202,37 @@ def reindex_unsorted_files(log_callback=None, progress_callback=None):
     
     for idx, doc in enumerate(docs):
         doc_id, rel_path, filename = doc
-        full_path = os.path.join(database.get_base_path(), rel_path)
-        
-        if not os.path.exists(full_path):
-            continue
+        if status_callback:
+            status_callback(filename, True)
             
-        ext = filename.lower().split('.')[-1]
-        isbn, doi = None, None
-        
-        if ext == 'pdf':
-            isbn, doi = extract_from_pdf(full_path)
-        elif ext == 'epub':
-            isbn, doi = extract_from_epub(full_path)
-
-        if isbn or doi:
+        try:
+            full_path = os.path.join(database.get_base_path(), rel_path)
+            
+            if not os.path.exists(full_path):
+                continue
+                
+            ext = filename.lower().split('.')[-1]
+            isbn, doi, text = None, None, ""
+            
+            if ext == 'pdf':
+                isbn, doi, text = extract_from_pdf(full_path)
+            elif ext == 'epub':
+                isbn, doi, text = extract_from_epub(full_path)
+            
+            keywords = extract_keywords(text)
+    
+            # Update DB with new IDs and keywords
             database.execute_atomic(
-                "UPDATE documents SET isbn = ?, doi = ? WHERE id = ?",
-                (isbn, doi, doc_id)
+                "UPDATE documents SET isbn = COALESCE(?, isbn), doi = COALESCE(?, doi), keywords = ?, is_hydrated = 0 WHERE id = ?",
+                (isbn, doi, keywords, doc_id)
             )
-            found_any += 1
-            if log_callback: log_callback(f"[+] Neue Info für {filename}: ISBN={isbn or '-'}, DOI={doi or '-'}")
-
+            if isbn or doi or keywords:
+                found_any += 1
+                if log_callback: log_callback(f"[+] Update für {filename}: Neue Schlagworte & Identifier gefunden.")
+        finally:
+            if status_callback:
+                status_callback(filename, False)
+                
         if progress_callback:
             progress_callback((idx + 1) / float(total), f"Re-Index: {idx+1}/{total}")
 

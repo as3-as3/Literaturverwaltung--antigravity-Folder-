@@ -56,7 +56,7 @@ class SearchApp(ctk.CTk):
         try:
             # JOIN query linking virtual FTS table to main structure while deduplicating exact match titles.
             sql = '''
-                SELECT d.title, d.author, d.year, d.filename, d.relative_path, d.keywords
+                SELECT d.title, d.author, d.year, d.filename, d.relative_path, d.keywords, d.doi
                 FROM documents_fts fts
                 JOIN documents d ON fts.rowid = d.id
                 WHERE documents_fts MATCH ?
@@ -70,7 +70,7 @@ class SearchApp(ctk.CTk):
             self.status_label.configure(text=f"{len(results)} eindeutige Literatur(en) gefunden (Dedupliziert).", text_color="gray")
             
             for index, res in enumerate(results):
-                title, author, year, filename, rel_path, keywords = res
+                title, author, year, filename, rel_path, keywords, doi = res
                 
                 res_box = ctk.CTkFrame(self.results_frame, fg_color="#2b2b2b", corner_radius=5)
                 res_box.grid(row=index, column=0, sticky="ew", padx=5, pady=5)
@@ -94,6 +94,10 @@ class SearchApp(ctk.CTk):
                 
                 btn_copy = ctk.CTkButton(btn_frame, text="Kopieren", width=80, fg_color="#444", command=lambda p=rel_path, f=filename: self.copy_file(p, f))
                 btn_copy.grid(row=0, column=1, padx=5)
+                
+                btn_cite = ctk.CTkButton(btn_frame, text="Zitieren", width=80, fg_color="#2e7d32", 
+                                         command=lambda t=title, a=author, y=year, d=doi: self.show_citation(t, a, y, d))
+                btn_cite.grid(row=1, column=0, columnspan=2, padx=5, pady=(5, 0), sticky="ew")
                 
         except sqlite3.Error as e:
             self.status_label.configure(text=f"Suchfehler: {e}", text_color="red")
@@ -125,6 +129,36 @@ class SearchApp(ctk.CTk):
                 self.status_label.configure(text=f"Erfolgreich kopiert nach {dest}.", text_color="green")
             except Exception as e:
                 self.status_label.configure(text=f"Kopierfehler: {e}", text_color="red")
+
+    def show_citation(self, title, author, year, doi):
+        """Generates APA 7 citation and shows a popup with copy button."""
+        author_str = author if author else "Unbekannter Autor"
+        year_str = f"({year})" if year else "(o. J.)"
+        title_str = title if title else "Unbekannter Titel"
+        doi_str = f" https://doi.org/{doi}" if doi else ""
+        
+        citation = f"{author_str} {year_str}. {title_str}.{doi_str}"
+        
+        popup = ctk.CTkToplevel(self)
+        popup.title("Zitieren (APA 7)")
+        popup.geometry("500x250")
+        popup.attributes("-topmost", True)
+        
+        ctk.CTkLabel(popup, text="APA 7 Zitat:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        
+        txt_box = ctk.CTkTextbox(popup, width=450, height=80)
+        txt_box.pack(padx=20, pady=10)
+        txt_box.insert("0.0", citation)
+        txt_box.configure(state="disabled")
+        
+        def copy():
+            self.clipboard_clear()
+            self.clipboard_append(citation)
+            btn_cp.configure(text="Kopiert!", fg_color="gray")
+            self.after(2000, lambda: btn_cp.configure(text="In die Zwischenablage", fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"]))
+            
+        btn_cp = ctk.CTkButton(popup, text="In die Zwischenablage", command=copy)
+        btn_cp.pack(pady=10)
 
 if __name__ == "__main__":
     app = SearchApp()

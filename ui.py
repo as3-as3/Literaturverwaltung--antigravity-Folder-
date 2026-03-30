@@ -192,6 +192,11 @@ class APLMainWindow(ctk.CTk):
         self.eta_label = ctk.CTkLabel(self.main_frame, text="Wartet...", text_color="gray", font=ctk.CTkFont(size=11))
         self.eta_label.pack(anchor="e", padx=10, pady=(2, 10))
 
+        # Active Processes Overlay (Top Right)
+        self.status_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.status_frame.place(relx=1.0, x=-20, y=20, anchor="ne")
+        self.active_task_labels = {}
+
     def log(self, message):
         """Thread-safe logging to the text box using after()."""
         def _log():
@@ -209,6 +214,21 @@ class APLMainWindow(ctk.CTk):
                 self.eta_label.configure(text=eta_text)
         self.after(0, _update)
 
+    def update_status(self, filename, is_active):
+        """Thread-safe update of the status overlay for per-file feedback."""
+        def _update():
+            if is_active:
+                if filename not in self.active_task_labels:
+                    lbl = ctk.CTkLabel(self.status_frame, text=f"⏳ {filename[:30]}...", 
+                                       font=ctk.CTkFont(size=11), text_color="#2ECC71")
+                    lbl.pack(anchor="e")
+                    self.active_task_labels[filename] = lbl
+            else:
+                if filename in self.active_task_labels:
+                    self.active_task_labels[filename].destroy()
+                    del self.active_task_labels[filename]
+        self.after(0, _update)
+
     def on_autorun(self):
         self.log("[*] Starte vollständige Auto-Pipeline für den USB-Stick...")
         self.log("[*] Das System bearbeitet ausschließlich den Ordner in dem diese .exe liegt!")
@@ -218,10 +238,10 @@ class APLMainWindow(ctk.CTk):
         def worker():
             start_total = time.time()
             self.log("[+] Schritt 1/4: Indexiere lokale Dokumente...")
-            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress)
+            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             
             self.log("[+] Schritt 2/4: Sammle Metadaten...")
-            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
+            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             
             self.log("[+] Schritt 3/4: Bibliotheks-Sortierung...")
             sorter.run_sorter(log_callback=self.log, progress_callback=self.set_progress)
@@ -246,7 +266,7 @@ class APLMainWindow(ctk.CTk):
         self.eta_label.configure(text="Berechne...")
         def worker():
             st = time.time()
-            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress)
+            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             m, s = divmod(int(time.time() - st), 60)
             self.set_progress(1.0, f"Fertig in {m}m {s}s")
             self.log(f"[*] Scan task completed in {m}m {s}s.")
@@ -258,7 +278,7 @@ class APLMainWindow(ctk.CTk):
         self.eta_label.configure(text="Berechne...")
         def worker():
             st = time.time()
-            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
+            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             m, s = divmod(int(time.time() - st), 60)
             self.set_progress(1.0, f"Fertig in {m}m {s}s")
             self.log(f"[*] Hydration task completed in {m}m {s}s.")
@@ -390,8 +410,8 @@ class APLMainWindow(ctk.CTk):
             self.log("[*] Führe automatischen Index- & Sortierdurchlauf aus...")
             
             # Chain the pipeline immediately for zero-click sorting of the import
-            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress)
-            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
+            indexer.run_indexer(database.get_base_path(), log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
+            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             sorter.run_sorter(log_callback=self.log, progress_callback=self.set_progress)
             exporter.export_research_list(log_callback=self.log)
             exporter.export_html_search(log_callback=self.log)
@@ -414,11 +434,11 @@ class APLMainWindow(ctk.CTk):
         def worker():
             start_t = time.time()
             # 1. Deeper extraction for unsorted files
-            indexer.reindex_unsorted_files(log_callback=self.log, progress_callback=self.set_progress)
+            indexer.reindex_unsorted_files(log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             
             # 2. Fresh hydration attempt for everything still un-hydrated
             self.log("[+] Identifizierung abgeschlossen. Starte nun die Metadaten-Websuche...")
-            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
+            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress, status_callback=self.update_status)
             
             elapsed = time.time() - start_t
             m, s = divmod(int(elapsed), 60)

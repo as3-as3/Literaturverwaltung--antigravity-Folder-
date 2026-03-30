@@ -95,7 +95,7 @@ def execute_atomic(query: str, parameters: tuple = ()):
 def get_unhydrated_documents():
     conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, relative_path, isbn, doi FROM documents WHERE is_hydrated = 0")
+    cursor.execute("SELECT id, filename, relative_path, isbn, doi, keywords FROM documents WHERE is_hydrated = 0")
     docs = cursor.fetchall()
     conn.close()
     return docs
