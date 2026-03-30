@@ -34,9 +34,16 @@ def init_db():
             doi TEXT,
             keywords TEXT,
             is_hydrated INTEGER DEFAULT 0,
+            is_sorted INTEGER DEFAULT 0,
             content_hash TEXT
         )
     ''')
+    
+    # Migration: Add is_sorted if missing
+    try:
+        cursor.execute("ALTER TABLE documents ADD COLUMN is_sorted INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass # Column already exists
     
     # Create the Virtual Table for fast NLP searching (FTS5)
     cursor.execute('''

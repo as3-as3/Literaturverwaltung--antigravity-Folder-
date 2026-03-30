@@ -89,13 +89,14 @@ def assign_thematic_path_corpus(docs, log_callback=None):
             assignments[doc_id] = {
                 "matches": matches,
                 "top_word": top_word,
-                "filename": docs[i][2]
+                "filename": docs[i][2],
+                "title": docs[i][3]
             }
             
         return assignments
     except Exception as e:
         if log_callback: log_callback(f"Top-Clustering error: {e}")
-        return {d[0]: {"matches": [("_Manuelle_Pruefung", 0.0)], "top_word": "Fehler", "filename": d[2]} for d in docs}
+        return {d[0]: {"matches": [("_Manuelle_Pruefung", 0.0)], "top_word": "Fehler", "filename": d[2], "title": d[3]} for d in docs}
 
 def get_sorting_preview(log_callback=None):
     """Calculates assigned categories but does not move files."""
@@ -104,7 +105,7 @@ def get_sorting_preview(log_callback=None):
     try:
         conn = sqlite3.connect(database.get_db_path())
         cursor = conn.cursor()
-        cursor.execute("SELECT id, relative_path, filename, title, keywords FROM documents WHERE is_hydrated = 1")
+        cursor.execute("SELECT id, relative_path, filename, title, keywords FROM documents WHERE is_hydrated = 1 AND is_sorted = 0")
         docs = cursor.fetchall()
         conn.close()
     except Exception as e:
@@ -118,7 +119,7 @@ def get_sorting_preview(log_callback=None):
     for doc in docs:
         doc_id, rel_path, filename, title, keywords = doc
         text = f"{title or ''} {keywords or ''} {filename}".strip()
-        corpus_input.append((doc_id, text, filename))
+        corpus_input.append((doc_id, text, filename, title))
         
     assignments = assign_thematic_path_corpus(corpus_input, log_callback)
     
@@ -172,8 +173,12 @@ def apply_sorting(final_map, log_callback=None, progress_callback=None):
                     shutil.move(source_path, d_path)
                     
                 final_rel = os.path.relpath(d_path, database.get_base_path())
-                cursor.execute("UPDATE documents SET relative_path = ? WHERE id = ?", (final_rel, doc_id))
+                cursor.execute("UPDATE documents SET relative_path = ?, is_sorted = 1 WHERE id = ?", (final_rel, doc_id))
                 sorted_count += 1
+                
+                # Throttling to prevent IO saturation and UI lag
+                time.sleep(0.05)
+                
             except Exception as e:
                 if log_callback: log_callback(f"Error moving {filename}: {e}")
                 

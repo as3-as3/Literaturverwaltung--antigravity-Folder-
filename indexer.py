@@ -7,30 +7,35 @@ from ebooklib import epub
 import ebooklib
 import database
 
-ISBN_REGEX = re.compile(r"(?i)ISBN(?:-1[03])?:?\s*(?=[-0-9xX ]{13,17})(?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9xX]")
-DOI_REGEX = re.compile(r"(?i)\b(10\.\d{4,9}/[-._;()/:A-Z0-9]+)\b")
+ISBN_REGEX = re.compile(r"(?i)ISBN(?:-1[03])?:?\s*((?:97[89][- ]?)?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9xX])")
+DOI_REGEX = re.compile(r"(?i)\b(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)\b")
 
 def clean_identifier(text):
-    return re.sub(r'[^0-9X]', '', text.upper()) if text else None
+    if not text: return None
+    # Remove ISBN label if captured
+    text = re.sub(r'(?i)ISBN(?:-1[03])?:?\s*', '', text)
+    return re.sub(r'[^0-9X]', '', text.upper())
 
 def extract_from_filename(filename):
     isbn = ISBN_REGEX.search(filename)
     doi = DOI_REGEX.search(filename)
-    return (clean_identifier(isbn.group()) if isbn else None, doi.group(1) if doi else None)
+    return (clean_identifier(isbn.group(1)) if isbn else None, doi.group(1) if doi else None)
 
 def extract_from_pdf(filepath):
     isbn_val, doi_val = None, None
     try:
         reader = PdfReader(filepath)
         text = ""
-        for page_num in range(min(10, len(reader.pages))):
+        # Scan specifically the first 3 pages for speed and relevance
+        scan_limit = min(3, len(reader.pages))
+        for page_num in range(scan_limit):
             extracted = reader.pages[page_num].extract_text()
             if extracted: text += extracted + "\n"
         
         isbn = ISBN_REGEX.search(text)
         doi = DOI_REGEX.search(text)
         
-        if isbn: isbn_val = clean_identifier(isbn.group())
+        if isbn: isbn_val = clean_identifier(isbn.group(1))
         if doi: doi_val = doi.group(1)
             
     except Exception as e:

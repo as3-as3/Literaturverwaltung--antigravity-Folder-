@@ -65,7 +65,7 @@ class SortingPreviewWindow(ctk.CTkToplevel):
                 rename_map[old_name] = new_name
         
         self._on_close = None 
-        self.on_confirm(rename_map, excluded)
+        self.on_confirm(rename_map, excluded, self.assignments)
         self.destroy()
 
 class ManualAssignmentWindow(ctk.CTkToplevel):
@@ -90,7 +90,9 @@ class ManualAssignmentWindow(ctk.CTkToplevel):
             frame = ctk.CTkFrame(self.scroll_frame)
             frame.pack(fill="x", pady=5, padx=5)
             
-            ctk.CTkLabel(frame, text=data['filename'], width=250, anchor="w").pack(side="left", padx=5)
+            # Prioritize title over filename
+            display_name = data.get("title") or data.get("filename")
+            ctk.CTkLabel(frame, text=display_name, width=250, anchor="w").pack(side="left", padx=5)
             
             # Category Dropdown - Only KEPT ones
             initial_val = data["matches"][0][0] if data["matches"][0][0] in self.kept_categories else self.kept_categories[0] if self.kept_categories else "_nicht_zugeordnet"
@@ -175,16 +177,21 @@ class APLMainWindow(ctk.CTk):
         self.eta_label.pack(anchor="e", padx=10, pady=(2, 10))
 
     def log(self, message):
-        """Thread-safe logging to the text box."""
-        self.log_textbox.configure(state="normal")
-        self.log_textbox.insert("end", message + "\n")
-        self.log_textbox.see("end")
-        self.log_textbox.configure(state="disabled")
+        """Thread-safe logging to the text box using after()."""
+        def _log():
+            self.log_textbox.configure(state="normal")
+            self.log_textbox.insert("end", message + "\n")
+            self.log_textbox.see("end")
+            self.log_textbox.configure(state="disabled")
+        self.after(0, _log)
         
     def set_progress(self, value, eta_text=""):
-        self.progressbar.set(value)
-        if eta_text:
-            self.eta_label.configure(text=eta_text)
+        """Thread-safe progress updates using after()."""
+        def _update():
+            self.progressbar.set(value)
+            if eta_text:
+                self.eta_label.configure(text=eta_text)
+        self.after(0, _update)
 
     def on_autorun(self):
         self.log("[*] Starte vollständige Auto-Pipeline für den USB-Stick...")
@@ -264,36 +271,40 @@ class APLMainWindow(ctk.CTk):
     def _show_preview(self, counts, assignments):
         SortingPreviewWindow(self, counts, assignments, self._process_preview_selection)
 
-    def _process_preview_selection(self, rename_map, excluded):
+    def _process_preview_selection(self, rename_map, excluded, assignments):
         self.log(f"[*] Kategorien bestätigt. {len(excluded)} ausgeschlossen.")
+        self.eta_label.configure(text="Berechne Fallback...")
         
-        # 1. Prepare Fallback & Split docs
-        ready_assignments = {}
-        manual_docs = {}
-        kept_categories = list(rename_map.values())
-        
-        # We need a reverse map for assignments that used old names
-        # Actually rename_map keys are old names, values are new names.
-        
-        for doc_id, data in sorter.get_sorting_preview()[1].items(): # Refreshing to be safe, or just use passed assignments
-            # Check primary match
-            primary_cat = data["matches"][0][0]
+        def worker():
+            # 1. Prepare Fallback & Split docs
+            ready_assignments = {}
+            manual_docs = {}
+            kept_categories = list(rename_map.values())
             
-            final_cat = None
-            if primary_cat not in excluded and primary_cat != "Verschiedenes":
-                final_cat = rename_map.get(primary_cat, primary_cat)
-            else:
-                # Try Fallback (matches 1 to n)
-                for m_cat, m_score in data["matches"][1:]:
-                    if m_cat not in excluded and m_cat != "Verschiedenes":
-                        final_cat = rename_map.get(m_cat, m_cat)
-                        break
-            
-            if final_cat:
-                ready_assignments[doc_id] = {"cat": final_cat, "subcat": data["top_word"]}
-            else:
-                manual_docs[doc_id] = data
+            for doc_id, data in assignments.items():
+                primary_cat = data["matches"][0][0]
+                
+                final_cat = None
+                if primary_cat not in excluded and primary_cat != "Verschiedenes":
+                    final_cat = rename_map.get(primary_cat, primary_cat)
+                else:
+                    # Try Fallback (matches 1 to n)
+                    for m_cat, m_score in data["matches"][1:]:
+                        if m_cat not in excluded and m_cat != "Verschiedenes":
+                            final_cat = rename_map.get(m_cat, m_cat)
+                            break
+                
+                if final_cat:
+                    ready_assignments[doc_id] = {"cat": final_cat, "subcat": data["top_word"]}
+                else:
+                    manual_docs[doc_id] = data
 
+            # Switch to UI thread to show next step
+            self.after(0, lambda: self._show_manual_or_finalize(ready_assignments, manual_docs, kept_categories))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_manual_or_finalize(self, ready_assignments, manual_docs, kept_categories):
         if manual_docs:
             self.log(f"[*] {len(manual_docs)} Dokumente benötigen manuelle Zuordnung.")
             ManualAssignmentWindow(self, manual_docs, kept_categories, 
