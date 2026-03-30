@@ -72,7 +72,12 @@ class ManualAssignmentWindow(ctk.CTkToplevel):
     def __init__(self, parent, manual_docs, kept_categories, on_finalize):
         super().__init__(parent)
         self.title("Manuelle Nachbearbeitung")
-        self.geometry("800x600")
+        self.geometry("800x650")
+        
+        # Batching: Only show first 30 to prevent UI LAG / Freeze
+        limit = 30
+        all_ids = list(manual_docs.keys())
+        self.display_ids = all_ids[:limit]
         self.manual_docs = manual_docs
         self.kept_categories = sorted(kept_categories)
         self.on_finalize = on_finalize
@@ -80,13 +85,18 @@ class ManualAssignmentWindow(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(self, text="Schritt 2: Dateien manuell zuordnen", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, pady=20)
+        header_text = "Schritt 2: Dateien manuell zuordnen"
+        if len(all_ids) > limit:
+            header_text += f"\n(Zeige erste {limit} von {len(all_ids)} - Rest im nächsten Durchlauf)"
+            
+        ctk.CTkLabel(self, text=header_text, font=ctk.CTkFont(size=16, weight="bold"), justify="center").grid(row=0, column=0, pady=20)
         
         self.scroll_frame = ctk.CTkScrollableFrame(self, label_text="Unklare Zuordnungen")
         self.scroll_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
         
         self.doc_widgets = []
-        for doc_id, data in manual_docs.items():
+        for doc_id in self.display_ids:
+            data = manual_docs[doc_id]
             frame = ctk.CTkFrame(self.scroll_frame)
             frame.pack(fill="x", pady=5, padx=5)
             
@@ -107,13 +117,16 @@ class ManualAssignmentWindow(ctk.CTkToplevel):
             
             self.doc_widgets.append({"id": doc_id, "cat_var": cat_var, "sub_entry": sub_entry})
 
-        self.btn_finalize = ctk.CTkButton(self, text="Sortiervorgang jetzt starten", command=self._finalize)
+        self.btn_finalize = ctk.CTkButton(self, text="Auswahl bestätigen & Übernehmen", command=self._finalize)
         self.btn_finalize.grid(row=2, column=0, pady=20)
         
         self.after(100, self.lift)
         self.grab_set()
 
     def _finalize(self):
+        # Immediate visual feedback
+        self.withdraw()
+        
         final_assignments = {}
         for item in self.doc_widgets:
             final_assignments[item["id"]] = {
@@ -159,6 +172,9 @@ class APLMainWindow(ctk.CTk):
         
         self.btn_import = ctk.CTkButton(self.sidebar_frame, text="5. Ordner Importieren", command=self.on_import)
         self.btn_import.grid(row=6, column=0, padx=20, pady=10)
+
+        self.btn_reindex = ctk.CTkButton(self.sidebar_frame, text="6. Re-Index & Suche", command=self.on_reindex, fg_color="#555")
+        self.btn_reindex.grid(row=7, column=0, padx=20, pady=10)
 
         # Main content area
         self.main_frame = ctk.CTkFrame(self)
@@ -387,5 +403,26 @@ class APLMainWindow(ctk.CTk):
             
             self.set_progress(1.0, f"Fertig in {time_str}")
             self.log(f"[*] APL Import-Pipeline erfolgreich abgeschlossen! (Gesamtdauer: {time_str})")
+            
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_reindex(self):
+        self.log("[*] Tiefen-Reindexierung gestartet...")
+        self.log("[*] Suche nach unvollständigen Identifiern (DOI/ISBN) auf den ersten 3 Seiten...")
+        self.progressbar.set(0)
+        
+        def worker():
+            start_t = time.time()
+            # 1. Deeper extraction for unsorted files
+            indexer.reindex_unsorted_files(log_callback=self.log, progress_callback=self.set_progress)
+            
+            # 2. Fresh hydration attempt for everything still un-hydrated
+            self.log("[+] Identifizierung abgeschlossen. Starte nun die Metadaten-Websuche...")
+            hydrator.hydrate_documents(log_callback=self.log, progress_callback=self.set_progress)
+            
+            elapsed = time.time() - start_t
+            m, s = divmod(int(elapsed), 60)
+            self.log(f"[*] Re-Index & Suche vollständig abgeschlossen in {m}m {s}s.")
+            self.set_progress(1.0, f"Fertig ({m}m {s}s)")
             
         threading.Thread(target=worker, daemon=True).start()

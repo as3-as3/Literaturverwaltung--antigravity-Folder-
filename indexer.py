@@ -145,3 +145,54 @@ def run_indexer(root_path, log_callback=None, progress_callback=None):
             
     if log_callback: log_callback(f"Indexing finished. {docs_inserted} pending documents found.")
     return docs_inserted
+
+def reindex_unsorted_files(log_callback=None, progress_callback=None):
+    """Specifically re-scans documents that are NOT YET SORTED to pick up missing identifiers."""
+    if log_callback: log_callback("[*] Starte Tiefen-Reindexierung für unsortierte Werke...")
+    
+    try:
+        import sqlite3
+        conn = sqlite3.connect(database.get_db_path())
+        cursor = conn.cursor()
+        # Find docs that are not sorted
+        cursor.execute("SELECT id, relative_path, filename FROM documents WHERE is_sorted = 0")
+        docs = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        if log_callback: log_callback(f"DB Error: {e}")
+        return
+        
+    if not docs:
+        if log_callback: log_callback("[*] Keine unsortierten Werke zur Nachbearbeitung gefunden.")
+        return
+        
+    total = len(docs)
+    found_any = 0
+    
+    for idx, doc in enumerate(docs):
+        doc_id, rel_path, filename = doc
+        full_path = os.path.join(database.get_base_path(), rel_path)
+        
+        if not os.path.exists(full_path):
+            continue
+            
+        ext = filename.lower().split('.')[-1]
+        isbn, doi = None, None
+        
+        if ext == 'pdf':
+            isbn, doi = extract_from_pdf(full_path)
+        elif ext == 'epub':
+            isbn, doi = extract_from_epub(full_path)
+
+        if isbn or doi:
+            database.execute_atomic(
+                "UPDATE documents SET isbn = ?, doi = ? WHERE id = ?",
+                (isbn, doi, doc_id)
+            )
+            found_any += 1
+            if log_callback: log_callback(f"[+] Neue Info für {filename}: ISBN={isbn or '-'}, DOI={doi or '-'}")
+
+        if progress_callback:
+            progress_callback((idx + 1) / float(total), f"Re-Index: {idx+1}/{total}")
+
+    if log_callback: log_callback(f"[*] Re-Index abgeschlossen. {found_any} neue Identifier gefunden.")
