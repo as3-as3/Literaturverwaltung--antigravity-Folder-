@@ -43,13 +43,15 @@ def extract_from_filename(filename):
     doi = DOI_REGEX.search(filename)
     return (clean_identifier(isbn.group(1)) if isbn else None, doi.group(1) if doi else None)
 
-def extract_from_pdf(filepath):
+def extract_from_pdf(filepath, file_size=0):
     isbn_val, doi_val = None, None
+    text = ""
     try:
-        reader = PdfReader(filepath)
-        text = ""
-        # Scan specifically the first 3 pages for speed and relevance
-        scan_limit = min(3, len(reader.pages))
+        reader = PdfReader(filepath, strict=False)
+        # Smart scan limit: 1 page for >50MB, 3 pages for normal
+        scan_limit = 1 if file_size > 50 * 1024 * 1024 else 3
+        scan_limit = min(scan_limit, len(reader.pages))
+        
         for page_num in range(scan_limit):
             extracted = reader.pages[page_num].extract_text()
             if extracted: text += extracted + "\n"
@@ -62,24 +64,29 @@ def extract_from_pdf(filepath):
             
     except Exception as e:
         print(f"PDF Error {filepath}: {e}")
-    return isbn_val, doi_val, text # Return extracted text for keywords
+    return isbn_val, doi_val, text
 
-def extract_from_epub(filepath):
+def extract_from_epub(filepath, file_size=0):
     isbn_val, doi_val = None, None
+    text = ""
     try:
         book = epub.read_epub(filepath)
-        # Check metadata
+        # Metadata check
         identifier_meta = book.get_metadata('DC', 'identifier')
         for identifier in identifier_meta:
             val = identifier[0]
             if 'isbn' in val.lower(): isbn_val = clean_identifier(val)
             if 'doi' in val.lower(): doi_val = val
         
+        # Smart skip deep scan for very large EPUBs if meta found
+        if file_size > 30 * 1024 * 1024 and (isbn_val or doi_val):
+            return isbn_val, doi_val, ""
+            
         # Fallback to pure document string search
         if not isbn_val or not doi_val:
-            text = ""
             items = list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
-            for item in items[:3]:
+            max_p = 1 if file_size > 30 * 1024 * 1024 else 3
+            for item in items[:max_p]:
                 text += item.get_content().decode('utf-8', errors='ignore')
             isbn = ISBN_REGEX.search(text)
             doi = DOI_REGEX.search(text)
@@ -88,9 +95,9 @@ def extract_from_epub(filepath):
             
     except Exception as e:
         print(f"EPUB Error {filepath}: {e}")
-    return isbn_val, doi_val, text # Return extracted text for keywords
+    return isbn_val, doi_val, text
 
-def process_file_task(f, full_path, ext, status_callback=None):
+def process_file_task(f, full_path, ext, file_size=0, status_callback=None):
     """Isolated task for Thread-Pool without DB lock risks."""
     if status_callback:
         status_callback(f, True)
@@ -98,13 +105,17 @@ def process_file_task(f, full_path, ext, status_callback=None):
     try:
         isbn, doi = extract_from_filename(f)
         
-        # Deep extraction
+        # Deep extraction only if missing OR for small files (always)
+        # For >150MB, skip deep scan if filename already has identifiers
+        if file_size > 150 * 1024 * 1024 and (isbn or doi):
+            return f, full_path, isbn, doi, ""
+
         keywords = ""
         if not isbn or not doi:
             if ext == 'pdf':
-                p_isbn, p_doi, text = extract_from_pdf(full_path)
+                p_isbn, p_doi, text = extract_from_pdf(full_path, file_size)
             else:
-                p_isbn, p_doi, text = extract_from_epub(full_path)
+                p_isbn, p_doi, text = extract_from_epub(full_path, file_size)
             
             if not isbn: isbn = p_isbn
             if not doi: doi = p_doi
@@ -124,7 +135,12 @@ def run_indexer(root_path, log_callback=None, progress_callback=None, status_cal
         for f in filenames:
             ext = f.lower().split('.')[-1]
             if ext in ['pdf', 'epub']:
-                target_files.append((dirpath, f, ext))
+                full_path = os.path.join(dirpath, f)
+                size = os.path.getsize(full_path)
+                target_files.append((dirpath, f, ext, size))
+    
+    # Sort by size ASC (Small Files First) for immediate UX success
+    target_files.sort(key=lambda x: x[3])
                 
     total = len(target_files)
     if total == 0:
@@ -135,14 +151,15 @@ def run_indexer(root_path, log_callback=None, progress_callback=None, status_cal
     futures = []
     
     # Use max CPU threads capped at 8 to prevent RAM saturation / freezing on heavy PCs
-    workers = min(8, (os.cpu_count() or 1) * 2)
+    # Use 4 workers fixed for Indexing to protect USB-Stick I/O (prevents freezes)
+    workers = 4
     
     start_time = time.time()
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        for dirpath, f, ext in target_files:
+        for dirpath, f, ext, size in target_files:
             full_path = os.path.join(dirpath, f)
-            futures.append(executor.submit(process_file_task, f, full_path, ext, status_callback))
+            futures.append(executor.submit(process_file_task, f, full_path, ext, size, status_callback))
             
         for idx, future in enumerate(concurrent.futures.as_completed(futures)):
             completed = idx + 1
@@ -210,14 +227,15 @@ def reindex_unsorted_files(log_callback=None, progress_callback=None, status_cal
             
             if not os.path.exists(full_path):
                 continue
-                
+            
+            size = os.path.getsize(full_path)
             ext = filename.lower().split('.')[-1]
             isbn, doi, text = None, None, ""
             
             if ext == 'pdf':
-                isbn, doi, text = extract_from_pdf(full_path)
+                isbn, doi, text = extract_from_pdf(full_path, size)
             elif ext == 'epub':
-                isbn, doi, text = extract_from_epub(full_path)
+                isbn, doi, text = extract_from_epub(full_path, size)
             
             keywords = extract_keywords(text)
     
